@@ -1,0 +1,69 @@
+{
+  "dataset_name": "imageomics/sentinel-beetles",
+  "splits": {
+    "train": {
+      "num_samples": 22370,
+      "columns": [
+        "file_path",
+        "colorpicker_full_path",
+        "scalebar_full_path",
+        "SPEI_1y",
+        "SPEI_2y",
+        "SPEI_30d",
+        "public_id",
+        "eventID",
+        "domainID",
+        "scientificName",
+        "siteID",
+        "collectDate",
+        "relative_img_loc",
+        "colorpicker_path",
+        "scalebar_path"
+      ],
+      "domain_ids": [
+        1,
+        3,
+        4,
+        7,
+        9,
+        11,
+        32,
+        46,
+        99,
+        202
+      ]
+    },
+    "validation": {
+      "num_samples": 2486,
+      "columns": [
+        "file_path",
+        "colorpicker_full_path",
+        "scalebar_full_path",
+        "SPEI_1y",
+        "SPEI_2y",
+        "SPEI_30d",
+        "public_id",
+        "eventID",
+        "domainID",
+        "scientificName",
+        "siteID",
+        "collectDate",
+        "relative_img_loc",
+        "colorpicker_path",
+        "scalebar_path"
+      ],
+      "domain_ids": [
+        1,
+        3,
+        4,
+        7,
+        9,
+        11,
+        32,
+        46,
+        99,
+        202
+      ]
+    }
+  }
+}

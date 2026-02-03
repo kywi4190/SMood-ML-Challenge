@@ -1,0 +1,55 @@
+# Large data files (embeddings, model weights)
+embeddings/*.pt
+checkpoints/*.pt
+checkpoints/*.pth
+*.pt
+*.pth
+
+# Keep directory structure
+!embeddings/.gitkeep
+!checkpoints/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+.venv/
+ENV/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# Logs and outputs
+logs/
+*.log
+
+# Sensitive files
+hugtoken.txt
+.env
+*.env
+secrets.json
+credentials.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data (if raw images stored locally)
+data/images/
+data/raw/
+*.jpg
+*.jpeg
+*.png
+*.tif
+*.tiff

@@ -1,0 +1,15 @@
+{
+  "val_domains": [
+    32,
+    99
+  ],
+  "train_samples": 18524,
+  "val_samples": 3846,
+  "train_events": 916,
+  "val_events": 172,
+  "embedding_dim": 768,
+  "backbones": [
+    "bioclip2"
+  ],
+  "embedding_dim_bioclip2": 768
+}

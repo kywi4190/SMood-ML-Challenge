@@ -1,0 +1,32 @@
+# Beetles Drought Prediction - Dependencies
+# Install with: pip install -r requirements.txt
+
+# Core deep learning framework
+torch>=2.0.0
+torchvision>=0.15.0
+
+# HuggingFace libraries for DINOv3 and dataset loading
+transformers>=4.56.0  # DINOv3 support added in 4.56.0
+datasets>=3.0.0       # For loading the beetle dataset from HuggingFace
+
+# Open CLIP for BioClip2 backbone
+open_clip_torch>=2.20.0
+
+# Progress bars and logging
+tqdm>=4.65.0
+
+# TensorBoard for experiment tracking and visualization
+tensorboard>=2.12.0
+
+# Scientific computing
+numpy>=1.24.0
+scipy>=1.10.0  # For CRPS calculation
+
+# Data manipulation
+pandas>=2.0.0
+
+# Visualization (optional, for notebooks)
+matplotlib>=3.7.0
+
+# Utility for image handling
+Pillow>=9.4.0
