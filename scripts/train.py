@@ -25,9 +25,9 @@ sys.path.insert(0, str(project_root))
 import torch
 from config import (
     EMBEDDINGS_DIR, NUM_EPOCHS, LEARNING_RATE, BATCH_SIZE,
-    EMBEDDING_DIM, HIDDEN_DIM, DROPOUT, get_device, set_seed, print_config
+    EMBEDDING_DIM, HIDDEN_DIM, DROPOUT, LR_TYPE, get_device, set_seed, print_config
 )
-from src.model import RegressionHead, create_model
+from src.model import RegressionHead, create_model, SpeciesAwareRegressionHead
 from src.data_loader import create_data_loaders
 from src.trainer import Trainer
 from src.utils import print_model_summary, get_timestamp
@@ -127,10 +127,29 @@ def main():
         help='Name for this experiment (default: auto-generated)'
     )
     parser.add_argument(
+        '--lr_type',
+        type=str,
+        choices=['cosine', 'plateau'],
+        default=LR_TYPE,
+        help=f'Learning rate scheduler type (default: {LR_TYPE})'
+    )
+    parser.add_argument(
         '--seed',
         type=int,
         default=42,
         help='Random seed (default: 42)'
+    )
+    parser.add_argument(
+        '--use_species',
+        action='store_true',
+        default=False,
+        help='Use species name as an additional feature (requires extract_species.py first)'
+    )
+    parser.add_argument(
+        '--species_embed_dim',
+        type=int,
+        default=32,
+        help='Dimension of species embedding (default: 32)'
     )
 
     args = parser.parse_args()
@@ -150,17 +169,42 @@ def main():
     # Get device
     device = get_device()
 
+    # Load species vocab if needed
+    num_species = 0
+    if args.use_species:
+        import json
+        species_vocab_path = EMBEDDINGS_DIR / 'species_vocab.json'
+        train_species_path = EMBEDDINGS_DIR / 'train_species.pt'
+        val_species_path = EMBEDDINGS_DIR / 'val_species.pt'
+
+        missing_species = [f for f in [species_vocab_path, train_species_path, val_species_path] if not f.exists()]
+        if missing_species:
+            print("ERROR: Species data not found!")
+            print("Missing files:")
+            for f in missing_species:
+                print(f"  - {f}")
+            print("\nPlease run: python scripts/extract_species.py")
+            sys.exit(1)
+
+        with open(species_vocab_path, 'r') as f:
+            species_vocab = json.load(f)
+        num_species = len(species_vocab) - 1  # Exclude <unknown> at index 0
+        print(f"\nSpecies vocabulary loaded: {num_species} species + unknown")
+
     # Print configuration
     print(f"\nTraining Configuration:")
     print(f"  Backbone: {args.backbone}")
     print(f"  Epochs: {args.epochs}")
     print(f"  Learning rate: {args.lr}")
+    print(f"  LR scheduler: {args.lr_type}")
     print(f"  Batch size: {args.batch_size}")
     print(f"  Hidden dim: {args.hidden_dim}")
     print(f"  Dropout: {args.dropout}")
     print(f"  Model type: {args.model_type}")
     print(f"  Aggregation: {args.aggregation}")
     print(f"  Seed: {args.seed}")
+    if args.use_species:
+        print(f"  Species: ENABLED (embed_dim={args.species_embed_dim}, num_species={num_species})")
 
     # Create data loaders with backbone-specific embeddings
     print("\n" + "-" * 50)
@@ -177,7 +221,10 @@ def main():
         val_events_path=EMBEDDINGS_DIR / 'val_events.pt',
         batch_size=args.batch_size,
         aggregated=True,
-        aggregation=args.aggregation
+        aggregation=args.aggregation,
+        use_species=args.use_species,
+        train_species_path=EMBEDDINGS_DIR / 'train_species.pt' if args.use_species else None,
+        val_species_path=EMBEDDINGS_DIR / 'val_species.pt' if args.use_species else None
     )
 
     # Detect embedding dimension from loaded embeddings
@@ -190,32 +237,54 @@ def main():
     print("Creating model...")
     print("-" * 50)
 
-    model = create_model(
-        model_type=args.model_type,
-        embedding_dim=embedding_dim,
-        hidden_dim=args.hidden_dim,
-        dropout=args.dropout
-    )
-    print_model_summary(model, "RegressionHead")
+    if args.use_species:
+        model = SpeciesAwareRegressionHead(
+            num_species=num_species,
+            species_embed_dim=args.species_embed_dim,
+            image_embed_dim=embedding_dim,
+            hidden_dim=args.hidden_dim,
+            dropout=args.dropout,
+            model_type=args.model_type
+        )
+        print_model_summary(model, "SpeciesAwareRegressionHead")
+    else:
+        model = create_model(
+            model_type=args.model_type,
+            embedding_dim=embedding_dim,
+            hidden_dim=args.hidden_dim,
+            dropout=args.dropout
+        )
+        print_model_summary(model, "RegressionHead")
 
     # Generate experiment name if not provided
     # Format: {backbone}_{model_type}_{aggregation}_h{hidden_dim}_lr{learning_rate}_{timestamp}
     if args.experiment_name is None:
         lr_str = f"{args.lr:.0e}".replace("-", "")  # e.g., "1e04" for 0.0001
-        args.experiment_name = f"{args.backbone}_{args.model_type}_{args.aggregation}_h{args.hidden_dim}_lr{lr_str}_{get_timestamp()}"
+        species_str = f"_species{args.species_embed_dim}" if args.use_species else ""
+        args.experiment_name = f"{args.backbone}_{args.model_type}_{args.aggregation}_h{args.hidden_dim}{species_str}_lr{lr_str}_{get_timestamp()}"
 
     # Create trainer
     print("\n" + "-" * 50)
     print("Initializing trainer...")
     print("-" * 50)
 
+    # Build extra checkpoint info (for submission model reconstruction)
+    checkpoint_extra_info = {}
+    if args.use_species:
+        checkpoint_extra_info['species_config'] = {
+            'num_species': num_species,
+            'species_embed_dim': args.species_embed_dim,
+        }
+
     trainer = Trainer(
         model=model,
         train_loader=train_loader,
         val_loader=val_loader,
         learning_rate=args.lr,
+        lr_type=args.lr_type,
         device=device,
-        experiment_name=args.experiment_name
+        experiment_name=args.experiment_name,
+        checkpoint_extra_info=checkpoint_extra_info
     )
 
     # Train!

@@ -15,12 +15,16 @@ Usage:
     # Extract with BioClip2
     python scripts/extract_embeddings.py --backbone bioclip2
 
+    # Extract with color normalization
+    python scripts/extract_embeddings.py --backbone bioclip2 --colornorm
+
 You can have both dinov2 and bioclip2 embeddings saved simultaneously.
 """
 
 import os
 import sys
 import argparse
+import json
 import torch
 from pathlib import Path
 from tqdm import tqdm
@@ -62,7 +66,9 @@ def extract_split_embeddings(
     split_data,
     extractor,
     batch_size=16,
-    device=None
+    device=None,
+    color_cache=None,
+    colorpicker_mapping=None
 ):
     """
     Extract embeddings for all images in a dataset split.
@@ -72,11 +78,17 @@ def extract_split_embeddings(
         extractor: FeatureExtractor instance
         batch_size: Batch size for extraction
         device: Device to use
+        color_cache: Optional ColorCalibrationCache for color normalization
+        colorpicker_mapping: Optional dict mapping sample index to colorpicker path
 
     Returns:
         tuple: (embeddings, targets, event_ids, domain_ids)
     """
     device = device or get_device()
+
+    # Import color correction function if needed
+    if color_cache is not None:
+        from src.color_calibration import apply_color_correction
 
     all_embeddings = []
     all_targets = []
@@ -85,7 +97,11 @@ def extract_split_embeddings(
 
     # Process in batches
     num_samples = len(split_data)
-    print(f"Extracting embeddings from {num_samples} images...")
+    color_status = " with color normalization" if color_cache else ""
+    print(f"Extracting embeddings from {num_samples} images{color_status}...")
+
+    corrections_applied = 0
+    corrections_skipped = 0
 
     for start_idx in tqdm(range(0, num_samples, batch_size), desc="Extracting"):
         end_idx = min(start_idx + batch_size, num_samples)
@@ -93,6 +109,24 @@ def extract_split_embeddings(
 
         # Get images (they come as PIL Images from HuggingFace)
         images = batch_data['file_path']
+
+        # Apply color correction if cache is provided
+        if color_cache is not None and colorpicker_mapping is not None:
+            corrected_images = []
+            for i, img in enumerate(images):
+                global_idx = start_idx + i
+                cp_key = colorpicker_mapping.get(str(global_idx))
+                if cp_key:
+                    ccm = color_cache.get(cp_key)
+                    if ccm is not None and not ccm.is_identity():
+                        img = apply_color_correction(img, ccm)
+                        corrections_applied += 1
+                    else:
+                        corrections_skipped += 1
+                else:
+                    corrections_skipped += 1
+                corrected_images.append(img)
+            images = corrected_images
 
         # Extract embeddings for this batch
         batch_embeddings = extractor.extract_batch(
@@ -126,6 +160,9 @@ def extract_split_embeddings(
 
     print(f"Extracted embeddings shape: {embeddings.shape}")
     print(f"Targets shape: {targets.shape}")
+
+    if color_cache is not None:
+        print(f"Color corrections: {corrections_applied} applied, {corrections_skipped} skipped")
 
     return embeddings, targets, event_ids, domain_ids
 
@@ -166,7 +203,7 @@ def split_by_domain(embeddings, targets, event_ids, domain_ids, val_domains):
     }
 
 
-def save_embeddings(data_dict, output_dir, prefix, backbone):
+def save_embeddings(data_dict, output_dir, prefix, backbone, colornorm=False):
     """
     Save embeddings and metadata to disk with backbone suffix.
 
@@ -175,12 +212,18 @@ def save_embeddings(data_dict, output_dir, prefix, backbone):
         output_dir: Output directory
         prefix: Prefix for filenames (e.g., 'train' or 'val')
         backbone: Backbone name for suffix (e.g., 'dinov2' or 'bioclip2')
+        colornorm: Whether color normalization was applied
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Build filename suffix
+    suffix = backbone
+    if colornorm:
+        suffix += '_colornorm'
+
     # Save embeddings with backbone suffix
-    torch.save(data_dict['embeddings'], output_dir / f'{prefix}_embeddings_{backbone}.pt')
+    torch.save(data_dict['embeddings'], output_dir / f'{prefix}_embeddings_{suffix}.pt')
 
     # Save targets and events WITHOUT backbone suffix (they're the same regardless of backbone)
     # Only save if they don't exist yet
@@ -195,8 +238,8 @@ def save_embeddings(data_dict, output_dir, prefix, backbone):
     if not domains_path.exists():
         torch.save(data_dict['domain_ids'], domains_path)
 
-    print(f"Saved {prefix} data ({backbone}):")
-    print(f"  Embeddings: {data_dict['embeddings'].shape} -> {prefix}_embeddings_{backbone}.pt")
+    print(f"Saved {prefix} data ({suffix}):")
+    print(f"  Embeddings: {data_dict['embeddings'].shape} -> {prefix}_embeddings_{suffix}.pt")
     print(f"  Targets: {data_dict['targets'].shape}")
     print(f"  Events: {data_dict['event_ids'].shape}")
 
@@ -243,6 +286,11 @@ def main():
         action='store_true',
         help='List available backbones and exit'
     )
+    parser.add_argument(
+        '--colornorm',
+        action='store_true',
+        help='Apply color normalization using colorpicker calibration'
+    )
 
     args = parser.parse_args()
 
@@ -255,12 +303,41 @@ def main():
     print("EMBEDDING EXTRACTION")
     print("=" * 60)
     print(f"Backbone: {args.backbone}")
+    print(f"Color normalization: {args.colornorm}")
 
     # Set random seed for reproducibility
     set_seed()
 
     # Get device
     device = get_device()
+
+    # Load color calibration cache if needed
+    color_cache = None
+    colorpicker_mapping = None
+    if args.colornorm:
+        from src.color_calibration import ColorCalibrationCache
+
+        color_cache = ColorCalibrationCache()
+        cache_path = Path(args.output_dir) / 'color_corrections.pkl'
+        mapping_path = Path(args.output_dir) / 'colorpicker_mapping.json'
+
+        if not cache_path.exists():
+            print(f"\nError: Color calibration cache not found at {cache_path}")
+            print("Run extract_color_corrections.py first:")
+            print("  python scripts/extract_color_corrections.py")
+            sys.exit(1)
+
+        if not color_cache.load(cache_path):
+            print(f"\nError: Failed to load color calibration cache from {cache_path}")
+            sys.exit(1)
+
+        if mapping_path.exists():
+            with open(mapping_path, 'r') as f:
+                colorpicker_mapping = json.load(f)
+            print(f"Loaded colorpicker mapping with {len(colorpicker_mapping)} entries")
+        else:
+            print(f"\nWarning: Colorpicker mapping not found at {mapping_path}")
+            print("Color correction will be skipped for all samples.")
 
     # Get token
     try:
@@ -287,7 +364,9 @@ def main():
         train_data,
         extractor,
         batch_size=args.batch_size,
-        device=device
+        device=device,
+        color_cache=color_cache,
+        colorpicker_mapping=colorpicker_mapping
     )
 
     # Split by domain for validation
@@ -313,11 +392,10 @@ def main():
     print("Saving embeddings...")
     print("-" * 50)
 
-    save_embeddings(splits['train'], args.output_dir, 'train', args.backbone)
-    save_embeddings(splits['val'], args.output_dir, 'val', args.backbone)
+    save_embeddings(splits['train'], args.output_dir, 'train', args.backbone, args.colornorm)
+    save_embeddings(splits['val'], args.output_dir, 'val', args.backbone, args.colornorm)
 
     # Save/update metadata
-    import json
     metadata_path = Path(args.output_dir) / 'metadata.json'
 
     # Load existing metadata if it exists
@@ -334,13 +412,18 @@ def main():
     metadata['train_events'] = train_events
     metadata['val_events'] = val_events
 
+    # Build backbone key with optional colornorm suffix
+    backbone_key = args.backbone
+    if args.colornorm:
+        backbone_key += '_colornorm'
+
     # Track which backbones have been extracted
     if 'backbones' not in metadata:
         metadata['backbones'] = []
-    if args.backbone not in metadata['backbones']:
-        metadata['backbones'].append(args.backbone)
+    if backbone_key not in metadata['backbones']:
+        metadata['backbones'].append(backbone_key)
 
-    metadata[f'embedding_dim_{args.backbone}'] = splits['train']['embeddings'].shape[1]
+    metadata[f'embedding_dim_{backbone_key}'] = splits['train']['embeddings'].shape[1]
 
     with open(metadata_path, 'w') as f:
         json.dump(metadata, f, indent=2)
@@ -350,12 +433,12 @@ def main():
     print("\n" + "=" * 60)
     print("EMBEDDING EXTRACTION COMPLETE")
     print("=" * 60)
-    print(f"\nBackbone: {args.backbone}")
+    print(f"\nBackbone: {backbone_key}")
     print(f"Embeddings saved to: {args.output_dir}")
-    print(f"  - train_embeddings_{args.backbone}.pt")
-    print(f"  - val_embeddings_{args.backbone}.pt")
+    print(f"  - train_embeddings_{backbone_key}.pt")
+    print(f"  - val_embeddings_{backbone_key}.pt")
     print(f"\nNext step: Run training with this backbone:")
-    print(f"  python scripts/train.py --backbone {args.backbone}")
+    print(f"  python scripts/train.py --backbone {backbone_key}")
 
 
 if __name__ == "__main__":

@@ -40,9 +40,13 @@ from tqdm import tqdm
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from config import EMBEDDINGS_DIR, CHECKPOINTS_DIR, LOGS_DIR, get_device, set_seed
+from config import (
+    EMBEDDINGS_DIR, CHECKPOINTS_DIR, LOGS_DIR, get_device, set_seed,
+    TARGET_COLUMNS, TARGET_INDICES_SHORT_TERM, TARGET_INDICES_LONG_TERM, MIN_SIGMA
+)
 from src.data_loader import create_data_loaders
-from src.model import create_model
+from src.model import create_model, create_specialized_model
+from src.loss import gaussian_nll_loss
 from src.metrics import compute_competition_score
 from src.utils import get_timestamp
 
@@ -66,6 +70,7 @@ PARAM_GRID = {
 }
 
 # For specialized model grid search, you can use different grids
+# These can be customized independently for short-term vs long-term predictions
 PARAM_GRID_SPECIALIZED_30D = {
     'learning_rate': [1e-3, 1e-4, 1e-5],
     'lr_type': ['cosine', 'plateau'],
@@ -91,94 +96,6 @@ PARAM_GRID_SPECIALIZED_1Y2Y = {
     'size_factor': [0.5, 0.25],
     'weight_decay': [1e-3, 1e-4],
 }
-
-# Minimum sigma for numerical stability
-MIN_SIGMA = 1e-3
-
-
-# =============================================================================
-# SPECIALIZED MODEL CLASSES (for specialized grid search)
-# =============================================================================
-
-class SpecializedRegressionHead(nn.Module):
-    """Simple regression head for specialized targets."""
-
-    def __init__(self, embedding_dim, num_targets, hidden_dim, dropout=0.1):
-        super().__init__()
-        self.num_targets = num_targets
-        self.fc1 = nn.Linear(embedding_dim, hidden_dim)
-        self.dropout = nn.Dropout(dropout)
-        self.fc2 = nn.Linear(hidden_dim, num_targets * 2)
-        self._init_weights()
-
-    def _init_weights(self):
-        nn.init.xavier_uniform_(self.fc1.weight)
-        nn.init.zeros_(self.fc1.bias)
-        nn.init.xavier_uniform_(self.fc2.weight)
-        nn.init.zeros_(self.fc2.bias)
-
-    def forward(self, x):
-        x = F.relu(self.fc1(x))
-        x = self.dropout(x)
-        output = self.fc2(x)
-        mu = output[:, :self.num_targets]
-        sigma_raw = output[:, self.num_targets:]
-        sigma = F.softplus(sigma_raw) + MIN_SIGMA
-        return mu, sigma
-
-
-class DeeperSpecializedRegressionHead(nn.Module):
-    """Deeper regression head for specialized targets."""
-
-    def __init__(self, embedding_dim, num_targets, hidden_dim, dropout=0.1, size_factor=0.5):
-        super().__init__()
-        self.num_targets = num_targets
-        h1 = hidden_dim
-        h2 = max(1, int(hidden_dim * size_factor))
-        h3 = max(1, int(hidden_dim * size_factor * size_factor))
-        self.fc1 = nn.Linear(embedding_dim, h1)
-        self.fc2 = nn.Linear(h1, h2)
-        self.fc3 = nn.Linear(h2, h3)
-        self.fc_out = nn.Linear(h3, num_targets * 2)
-        self.dropout = nn.Dropout(dropout)
-        self._init_weights()
-
-    def _init_weights(self):
-        for module in self.modules():
-            if isinstance(module, nn.Linear):
-                nn.init.xavier_uniform_(module.weight)
-                nn.init.zeros_(module.bias)
-
-    def forward(self, x):
-        x = F.relu(self.fc1(x))
-        x = self.dropout(x)
-        x = F.relu(self.fc2(x))
-        x = self.dropout(x)
-        x = F.relu(self.fc3(x))
-        x = self.dropout(x)
-        output = self.fc_out(x)
-        mu = output[:, :self.num_targets]
-        sigma_raw = output[:, self.num_targets:]
-        sigma = F.softplus(sigma_raw) + MIN_SIGMA
-        return mu, sigma
-
-
-def create_specialized_model(embedding_dim, num_targets, hidden_dim, dropout, model_type, size_factor):
-    """Factory for specialized models."""
-    if model_type == 'simple':
-        return SpecializedRegressionHead(embedding_dim, num_targets, hidden_dim, dropout)
-    else:
-        return DeeperSpecializedRegressionHead(embedding_dim, num_targets, hidden_dim, dropout, size_factor)
-
-
-# =============================================================================
-# TRAINING FUNCTIONS
-# =============================================================================
-
-def gaussian_nll_loss(mu, sigma, targets):
-    """Compute Gaussian negative log-likelihood loss."""
-    nll = 0.5 * np.log(2 * np.pi) + torch.log(sigma) + 0.5 * ((targets - mu) / sigma) ** 2
-    return nll.mean()
 
 
 def train_model_with_params(
@@ -507,7 +424,7 @@ def run_specialized_grid_search(param_grid_30d, param_grid_1y2y, device, writer)
 
         result = train_model_with_params(
             model, train_loader, val_loader, params, device,
-            target_indices=[0]  # SPEI_30d only
+            target_indices=TARGET_INDICES_SHORT_TERM  # SPEI_30d only
         )
 
         results_30d.append({
@@ -578,7 +495,7 @@ def run_specialized_grid_search(param_grid_30d, param_grid_1y2y, device, writer)
 
         result = train_model_with_params(
             model, train_loader, val_loader, params, device,
-            target_indices=[1, 2]  # SPEI_1y, SPEI_2y only
+            target_indices=TARGET_INDICES_LONG_TERM  # SPEI_1y, SPEI_2y only
         )
 
         results_1y2y.append({

@@ -64,7 +64,8 @@ class Trainer:
         device=None,
         experiment_name=None,
         lr_type=LR_TYPE,
-        num_epochs=NUM_EPOCHS
+        num_epochs=NUM_EPOCHS,
+        checkpoint_extra_info=None
     ):
         """
         Initialize the trainer.
@@ -79,8 +80,10 @@ class Trainer:
             experiment_name: Name for this experiment (for logging)
             lr_type: Learning rate scheduler type ('cosine' or 'plateau')
             num_epochs: Number of epochs (used for cosine scheduler)
+            checkpoint_extra_info: Optional dict of extra info to save in checkpoints
         """
         self.device = device or get_device()
+        self.checkpoint_extra_info = checkpoint_extra_info or {}
         self.model = model.to(self.device)
         self.train_loader = train_loader
         self.val_loader = val_loader
@@ -155,17 +158,29 @@ class Trainer:
         # Progress bar for this epoch
         pbar = tqdm(self.train_loader, desc=f"Epoch {epoch} [Train]", leave=False)
 
-        for embeddings, targets in pbar:
-            # Move data to device (GPU if available)
-            embeddings = embeddings.to(self.device)
-            targets = targets.to(self.device)
+        for batch in pbar:
+            # Unpack batch: supports both 2-element and 3-element tuples
+            # 3-element: (embeddings, targets, species) for species-aware models
+            if len(batch) == 3:
+                embeddings, targets, species = batch
+                embeddings = embeddings.to(self.device)
+                targets = targets.to(self.device)
+                species = species.to(self.device)
+            else:
+                embeddings, targets = batch
+                embeddings = embeddings.to(self.device)
+                targets = targets.to(self.device)
+                species = None
 
             # Zero the gradients from previous step
             # This is required because PyTorch accumulates gradients
             self.optimizer.zero_grad()
 
             # Forward pass: get predictions from model
-            mu, sigma = self.model(embeddings)
+            if species is not None:
+                mu, sigma = self.model(embeddings, species)
+            else:
+                mu, sigma = self.model(embeddings)
 
             # Compute loss
             loss = self.criterion(mu, sigma, targets)
@@ -207,12 +222,24 @@ class Trainer:
 
         pbar = tqdm(self.val_loader, desc=f"Epoch {epoch} [Val]", leave=False)
 
-        for embeddings, targets in pbar:
-            embeddings = embeddings.to(self.device)
-            targets = targets.to(self.device)
+        for batch in pbar:
+            # Unpack batch: supports both 2-element and 3-element tuples
+            if len(batch) == 3:
+                embeddings, targets, species = batch
+                embeddings = embeddings.to(self.device)
+                targets = targets.to(self.device)
+                species = species.to(self.device)
+            else:
+                embeddings, targets = batch
+                embeddings = embeddings.to(self.device)
+                targets = targets.to(self.device)
+                species = None
 
             # Forward pass only (no gradients needed)
-            mu, sigma = self.model(embeddings)
+            if species is not None:
+                mu, sigma = self.model(embeddings, species)
+            else:
+                mu, sigma = self.model(embeddings)
 
             # Compute loss
             loss = self.criterion(mu, sigma, targets)
@@ -344,13 +371,15 @@ class Trainer:
     def save_best_model(self):
         """Save the current model as the best model."""
         save_path = self.checkpoint_dir / "best_model.pt"
+        extra = {'val_crps': self.best_val_crps}
+        extra.update(self.checkpoint_extra_info)
         save_checkpoint(
             model=self.model,
             optimizer=self.optimizer,
             epoch=self.best_epoch,
             loss=self.best_val_crps,
             path=save_path,
-            extra_info={'val_crps': self.best_val_crps}
+            extra_info=extra
         )
 
     def save_final_model(self):

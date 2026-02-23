@@ -283,18 +283,57 @@ class FeatureExtractor:
         return self.processor
 
 
-def get_embedding_filename(base_name, backbone):
+def get_embedding_filename(prefix, backbone, colornorm=False):
     """
-    Generate embedding filename with backbone suffix.
+    Generate consistent embedding filename.
 
     Args:
-        base_name: Base filename (e.g., 'train_embeddings')
-        backbone: Backbone name ('dinov2' or 'bioclip2')
+        prefix: Prefix for filename (e.g., 'train' or 'val')
+        backbone: Backbone name ('dinov2', 'bioclip2', etc.)
+        colornorm: Whether color normalization was applied
 
     Returns:
-        str: Filename with backbone suffix (e.g., 'train_embeddings_dinov2.pt')
+        str: Filename with backbone suffix (e.g., 'train_embeddings_bioclip2_colornorm.pt')
+
+    Examples:
+        get_embedding_filename('train', 'bioclip2') -> 'train_embeddings_bioclip2.pt'
+        get_embedding_filename('val', 'dinov2', colornorm=True) -> 'val_embeddings_dinov2_colornorm.pt'
     """
-    return f"{base_name}_{backbone}.pt"
+    suffix = backbone
+    if colornorm:
+        suffix += '_colornorm'
+    return f"{prefix}_embeddings_{suffix}.pt"
+
+
+def get_backbone_key(backbone, colornorm=False):
+    """
+    Generate backbone key for metadata and configuration.
+
+    Args:
+        backbone: Base backbone name ('dinov2', 'bioclip2', etc.)
+        colornorm: Whether color normalization is applied
+
+    Returns:
+        str: Backbone key (e.g., 'bioclip2_colornorm')
+    """
+    if colornorm:
+        return f"{backbone}_colornorm"
+    return backbone
+
+
+def parse_backbone_key(backbone_key):
+    """
+    Parse a backbone key to extract base backbone and colornorm flag.
+
+    Args:
+        backbone_key: Combined key (e.g., 'bioclip2_colornorm' or 'dinov2')
+
+    Returns:
+        tuple: (backbone, colornorm) e.g., ('bioclip2', True)
+    """
+    if backbone_key.endswith('_colornorm'):
+        return backbone_key[:-10], True  # Remove '_colornorm' suffix
+    return backbone_key, False
 
 
 def extract_and_save_embeddings(

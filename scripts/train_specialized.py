@@ -37,10 +37,11 @@ from datetime import datetime
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-# Import from main config (paths, device, seed)
+# Import from main config (paths, device, seed, target indices)
 from config import (
     EMBEDDINGS_DIR, CHECKPOINTS_DIR, LOGS_DIR,
-    get_device, set_seed
+    get_device, set_seed,
+    TARGET_COLUMNS, TARGET_INDICES_SHORT_TERM, TARGET_INDICES_LONG_TERM
 )
 
 # Import specialized hyperparameters
@@ -51,162 +52,12 @@ from config_specialized import (
     WEIGHT_DECAY, MIN_SIGMA, RANDOM_SEED, LR_TYPE
 )
 
+# Import shared modules (no more code duplication!)
 from src.data_loader import create_data_loaders
-from src.metrics import compute_competition_score
+from src.model import create_specialized_model
+from src.loss import gaussian_nll_loss
+from src.metrics import compute_competition_score, crps_gaussian
 from src.utils import get_timestamp
-
-
-# =============================================================================
-# SPECIALIZED MODELS
-# =============================================================================
-
-class SpecializedRegressionHead(nn.Module):
-    """
-    Simple regression head that predicts only specific SPEI targets.
-
-    Architecture: embedding → hidden → output
-
-    This model outputs predictions for a subset of targets, eliminating
-    gradient interference from unrelated targets.
-
-    Args:
-        embedding_dim: Size of input embeddings
-        num_targets: Number of targets to predict (1 for 30d, 2 for 1y+2y)
-        hidden_dim: Size of hidden layer
-        dropout: Dropout probability
-    """
-
-    def __init__(self, embedding_dim, num_targets, hidden_dim, dropout=0.1):
-        super().__init__()
-
-        self.num_targets = num_targets
-
-        # Network layers
-        self.fc1 = nn.Linear(embedding_dim, hidden_dim)
-        self.dropout = nn.Dropout(dropout)
-        self.fc2 = nn.Linear(hidden_dim, num_targets * 2)  # mu + sigma per target
-
-        # Initialize weights
-        self._init_weights()
-
-    def _init_weights(self):
-        """Xavier initialization for better gradient flow."""
-        nn.init.xavier_uniform_(self.fc1.weight)
-        nn.init.zeros_(self.fc1.bias)
-        nn.init.xavier_uniform_(self.fc2.weight)
-        nn.init.zeros_(self.fc2.bias)
-
-    def forward(self, x):
-        """
-        Forward pass.
-
-        Returns:
-            tuple: (mu, sigma) each of shape (batch_size, num_targets)
-        """
-        x = F.relu(self.fc1(x))
-        x = self.dropout(x)
-        output = self.fc2(x)
-
-        mu = output[:, :self.num_targets]
-        sigma_raw = output[:, self.num_targets:]
-        sigma = F.softplus(sigma_raw) + MIN_SIGMA
-
-        return mu, sigma
-
-
-class DeeperSpecializedRegressionHead(nn.Module):
-    """
-    Deeper regression head with multiple hidden layers.
-
-    Architecture: embedding → hidden1 → hidden2 → hidden3 → output
-
-    Layer sizes decrease based on size_factor:
-    [hidden_dim, hidden_dim*factor, hidden_dim*factor^2]
-
-    Args:
-        embedding_dim: Size of input embeddings
-        num_targets: Number of targets to predict
-        hidden_dim: Size of first hidden layer (subsequent layers are smaller)
-        dropout: Dropout probability
-        size_factor: Layer size decay factor (default 0.5)
-    """
-
-    def __init__(self, embedding_dim, num_targets, hidden_dim, dropout=0.1, size_factor=0.5):
-        super().__init__()
-
-        self.num_targets = num_targets
-
-        # Decreasing layer sizes based on size_factor
-        h1 = hidden_dim
-        h2 = max(1, int(hidden_dim * size_factor))
-        h3 = max(1, int(hidden_dim * size_factor * size_factor))
-
-        # Network layers
-        self.fc1 = nn.Linear(embedding_dim, h1)
-        self.fc2 = nn.Linear(h1, h2)
-        self.fc3 = nn.Linear(h2, h3)
-        self.fc_out = nn.Linear(h3, num_targets * 2)
-
-        self.dropout = nn.Dropout(dropout)
-
-        # Initialize weights
-        self._init_weights()
-
-    def _init_weights(self):
-        """Xavier initialization for better gradient flow."""
-        for module in self.modules():
-            if isinstance(module, nn.Linear):
-                nn.init.xavier_uniform_(module.weight)
-                nn.init.zeros_(module.bias)
-
-    def forward(self, x):
-        """Forward pass through multiple layers."""
-        x = F.relu(self.fc1(x))
-        x = self.dropout(x)
-        x = F.relu(self.fc2(x))
-        x = self.dropout(x)
-        x = F.relu(self.fc3(x))
-        x = self.dropout(x)
-        output = self.fc_out(x)
-
-        mu = output[:, :self.num_targets]
-        sigma_raw = output[:, self.num_targets:]
-        sigma = F.softplus(sigma_raw) + MIN_SIGMA
-
-        return mu, sigma
-
-
-def create_specialized_model(embedding_dim, num_targets, hidden_dim, dropout, model_type='simple', size_factor=0.5):
-    """
-    Factory function to create specialized models.
-
-    Args:
-        embedding_dim: Size of input embeddings
-        num_targets: Number of targets to predict
-        hidden_dim: Hidden layer dimension
-        dropout: Dropout probability
-        model_type: 'simple' or 'deep'
-        size_factor: For 'deep' models, controls layer size decay (default 0.5)
-
-    Returns:
-        nn.Module: The created model
-    """
-    if model_type == 'simple':
-        return SpecializedRegressionHead(embedding_dim, num_targets, hidden_dim, dropout)
-    elif model_type == 'deep':
-        return DeeperSpecializedRegressionHead(embedding_dim, num_targets, hidden_dim, dropout, size_factor)
-    else:
-        raise ValueError(f"Unknown model_type: {model_type}. Choose 'simple' or 'deep'")
-
-
-# =============================================================================
-# TRAINING FUNCTIONS
-# =============================================================================
-
-def gaussian_nll_loss(mu, sigma, targets):
-    """Compute Gaussian negative log-likelihood loss."""
-    nll = 0.5 * np.log(2 * np.pi) + torch.log(sigma) + 0.5 * ((targets - mu) / sigma) ** 2
-    return nll.mean()
 
 
 def compute_crps_numpy(mu, sigma, targets):
@@ -588,8 +439,8 @@ Example:
         model=model1,
         train_loader=train_loader1,
         val_loader=val_loader1,
-        target_indices=[0],  # SPEI_30d
-        target_names=['SPEI_30d'],
+        target_indices=TARGET_INDICES_SHORT_TERM,  # [0] = SPEI_30d
+        target_names=[TARGET_COLUMNS[i] for i in TARGET_INDICES_SHORT_TERM],
         device=device,
         writer=writer
     )
@@ -637,8 +488,8 @@ Example:
         model=model2,
         train_loader=train_loader2,
         val_loader=val_loader2,
-        target_indices=[1, 2],  # SPEI_1y, SPEI_2y
-        target_names=['SPEI_1y', 'SPEI_2y'],
+        target_indices=TARGET_INDICES_LONG_TERM,  # [1, 2] = SPEI_1y, SPEI_2y
+        target_names=[TARGET_COLUMNS[i] for i in TARGET_INDICES_LONG_TERM],
         device=device,
         writer=writer
     )

@@ -11,9 +11,15 @@ During training, we try to minimize this loss, making predictions better.
 import torch
 import torch.nn as nn
 import math
+import sys
+from pathlib import Path
+
+# Add parent directory to path for imports
+sys.path.append(str(Path(__file__).parent.parent))
+from config import MIN_SIGMA, TARGET_COLUMNS
 
 
-def gaussian_nll_loss(mu, sigma, target, reduction='mean'):
+def gaussian_nll_loss(mu, sigma, target, reduction='mean', min_sigma=None):
     """
     Compute Gaussian Negative Log-Likelihood loss.
 
@@ -47,13 +53,18 @@ def gaussian_nll_loss(mu, sigma, target, reduction='mean'):
         sigma: Predicted standard deviations, shape (batch_size, num_targets)
         target: True values, shape (batch_size, num_targets)
         reduction: How to combine losses - 'mean', 'sum', or 'none'
+        min_sigma: Minimum sigma value to prevent numerical issues (default: config.MIN_SIGMA)
 
     Returns:
         Loss value (scalar if reduction='mean' or 'sum', tensor if 'none')
     """
+    # Use config default if not specified
+    if min_sigma is None:
+        min_sigma = MIN_SIGMA
+
     # Ensure sigma is positive by clamping to a minimum value
     # This prevents numerical issues like log(0) or division by 0
-    sigma = torch.clamp(sigma, min=1e-6)
+    sigma = torch.clamp(sigma, min=min_sigma)
 
     # Compute variance (sigma squared)
     variance = sigma ** 2
@@ -92,17 +103,17 @@ class GaussianNLLLoss(nn.Module):
         loss.backward()  # Backpropagate gradients
     """
 
-    def __init__(self, reduction='mean', min_sigma=1e-6):
+    def __init__(self, reduction='mean', min_sigma=None):
         """
         Initialize the loss function.
 
         Args:
             reduction: How to combine losses ('mean', 'sum', or 'none')
-            min_sigma: Minimum allowed sigma value to prevent numerical issues
+            min_sigma: Minimum allowed sigma value (default: config.MIN_SIGMA)
         """
         super().__init__()
         self.reduction = reduction
-        self.min_sigma = min_sigma
+        self.min_sigma = min_sigma if min_sigma is not None else MIN_SIGMA
 
     def forward(self, mu, sigma, target):
         """
@@ -116,12 +127,13 @@ class GaussianNLLLoss(nn.Module):
         Returns:
             Loss value
         """
-        # Clamp sigma to minimum value
-        sigma = torch.clamp(sigma, min=self.min_sigma)
-        return gaussian_nll_loss(mu, sigma, target, reduction=self.reduction)
+        # Pass min_sigma to the function (clamping happens there)
+        return gaussian_nll_loss(mu, sigma, target,
+                                 reduction=self.reduction,
+                                 min_sigma=self.min_sigma)
 
 
-def compute_per_target_loss(mu, sigma, target, target_names=None):
+def compute_per_target_loss(mu, sigma, target, target_names=None, min_sigma=None):
     """
     Compute loss for each target separately (useful for analysis).
 
@@ -131,13 +143,14 @@ def compute_per_target_loss(mu, sigma, target, target_names=None):
         mu: Predicted means, shape (batch_size, 3)
         sigma: Predicted standard deviations, shape (batch_size, 3)
         target: True values, shape (batch_size, 3)
-        target_names: Names for each target (default: SPEI metrics)
+        target_names: Names for each target (default: config.TARGET_COLUMNS)
+        min_sigma: Minimum sigma value (default: config.MIN_SIGMA)
 
     Returns:
         dict: Loss value for each target
     """
     if target_names is None:
-        target_names = ["SPEI_30d", "SPEI_1y", "SPEI_2y"]
+        target_names = TARGET_COLUMNS
 
     losses = {}
     for i, name in enumerate(target_names):
@@ -151,7 +164,8 @@ def compute_per_target_loss(mu, sigma, target, target_names=None):
             mu_i.unsqueeze(1),
             sigma_i.unsqueeze(1),
             target_i.unsqueeze(1),
-            reduction='mean'
+            reduction='mean',
+            min_sigma=min_sigma
         )
         losses[name] = loss_i.item()
 
@@ -162,29 +176,34 @@ def compute_per_target_loss(mu, sigma, target, target_names=None):
 # ALTERNATIVE LOSS FUNCTIONS (for experimentation)
 # =============================================================================
 
-def heteroscedastic_mse_loss(mu, sigma, target, reduction='mean'):
+def heteroscedastic_mse_loss(mu, sigma, target, reduction='mean', min_sigma=None):
     """
     Heteroscedastic MSE loss - a simpler alternative to Gaussian NLL.
+
+    NOTE: This function is kept for experimentation but is NOT currently used
+    in the main training pipeline. The GaussianNLLLoss is recommended instead.
 
     This loss downweights the contribution of samples with high uncertainty,
     encouraging the model to focus on samples it can predict well.
 
     The formula is: (target - mu)² / (2 * sigma²)
 
-    Note: This ignores the log(variance) term, so sigma can grow unbounded.
-    Use with caution - the model might learn to predict huge sigma for
-    everything to minimize loss.
+    WARNING: This ignores the log(variance) term, so sigma can grow unbounded.
+    The model might learn to predict huge sigma for everything to minimize loss.
 
     Args:
         mu: Predicted means
         sigma: Predicted standard deviations
         target: True values
         reduction: 'mean', 'sum', or 'none'
+        min_sigma: Minimum sigma value (default: config.MIN_SIGMA)
 
     Returns:
         Loss value
     """
-    sigma = torch.clamp(sigma, min=1e-6)
+    if min_sigma is None:
+        min_sigma = MIN_SIGMA
+    sigma = torch.clamp(sigma, min=min_sigma)
     loss = 0.5 * ((target - mu) ** 2) / (sigma ** 2)
 
     if reduction == 'mean':

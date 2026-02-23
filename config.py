@@ -46,6 +46,16 @@ DATASET_NAME = "imageomics/sentinel-beetles"
 # - SPEI_2y: drought conditions over the past 2 years
 TARGET_COLUMNS = ["SPEI_30d", "SPEI_1y", "SPEI_2y"]
 
+# Target indices for accessing specific predictions
+# Used by specialized models that predict subsets of targets
+TARGET_INDEX_30D = 0   # SPEI_30d is at index 0
+TARGET_INDEX_1Y = 1    # SPEI_1y is at index 1
+TARGET_INDEX_2Y = 2    # SPEI_2y is at index 2
+
+# Target groupings for specialized models
+TARGET_INDICES_SHORT_TERM = [TARGET_INDEX_30D]        # Model 1: short-term only
+TARGET_INDICES_LONG_TERM = [TARGET_INDEX_1Y, TARGET_INDEX_2Y]  # Model 2: long-term
+
 # Number of target values (mu and sigma for each SPEI metric)
 NUM_TARGETS = 3  # We predict 3 SPEI values
 
@@ -90,6 +100,31 @@ DROPOUT = 0.1
 # Output dimension: 6 values = 3 mu + 3 sigma
 # For each SPEI metric, we predict both the mean (mu) and uncertainty (sigma)
 OUTPUT_DIM = 6
+
+
+# =============================================================================
+# POOLING CONFIGURATION
+# =============================================================================
+
+# How to aggregate multiple beetle images from the same sampling event
+# Fixed pooling methods (no learnable parameters):
+#   'mean': Average embeddings (default, good baseline)
+#   'max': Element-wise maximum (captures strongest features)
+#   'sum': Sum embeddings (sensitive to number of images)
+# Learned pooling methods (trainable parameters):
+#   'attention': Attention-weighted pooling (learns which images matter)
+#   'gated_attention': Gated attention (more expressive)
+#   'statistics': Concatenates mean + std (captures distribution shape)
+#   'hybrid': Attention-weighted mean + weighted std (recommended for CRPS)
+POOLING_TYPE = 'mean'
+
+# Pooling module hidden dimension (for attention-based methods)
+POOLING_HIDDEN_DIM = 128
+
+# Available pooling types for reference
+FIXED_POOLING_TYPES = ['mean', 'max', 'sum']
+LEARNED_POOLING_TYPES = ['attention', 'gated_attention', 'statistics', 'hybrid']
+ALL_POOLING_TYPES = FIXED_POOLING_TYPES + LEARNED_POOLING_TYPES
 
 
 # =============================================================================

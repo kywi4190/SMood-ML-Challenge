@@ -2,16 +2,25 @@
 Configuration for specialized target-specific training.
 
 This file contains hyperparameters for the two specialized models:
-  - Model 1 (backbone1): Predicts SPEI_30d only
-  - Model 2 (backbone2): Predicts SPEI_1y and SPEI_2y
+  - Model 1 (backbone1): Predicts SPEI_30d only (short-term drought)
+  - Model 2 (backbone2): Predicts SPEI_1y and SPEI_2y (long-term drought)
+
+The specialized ensemble approach allows:
+  - Different backbones optimized for different prediction horizons
+  - Independent hyperparameter tuning per model
+  - DINOv3 tends to perform better on short-term (30d)
+  - BioCLIP2 tends to perform better on long-term (1y, 2y)
 
 Edit these values to tune each model independently.
 """
+
+from config import TARGET_INDICES_SHORT_TERM, TARGET_INDICES_LONG_TERM
 
 # =============================================================================
 # MODEL 1: SPEI_30d SPECIALIST (short-term drought)
 # =============================================================================
 # This model predicts only SPEI_30d using backbone1 (default: dinov3)
+# Target indices: TARGET_INDICES_SHORT_TERM = [0]
 
 MODEL1_HIDDEN_DIM = 128      # Hidden layer size
 MODEL1_BATCH_SIZE = 32       # Batch size for training
@@ -22,6 +31,7 @@ MODEL1_TYPE = 'deep'       # Model type: 'simple' or 'deep'
 # MODEL 2: SPEI_1y + SPEI_2y SPECIALIST (long-term drought)
 # =============================================================================
 # This model predicts SPEI_1y and SPEI_2y using backbone2 (default: bioclip2)
+# Target indices: TARGET_INDICES_LONG_TERM = [1, 2]
 
 MODEL2_HIDDEN_DIM = 64      # Hidden layer size (smaller - bioclip2 features are task-aligned)
 MODEL2_BATCH_SIZE = 64       # Batch size for training
@@ -35,7 +45,7 @@ MODEL2_TYPE = 'simple'       # Model type: 'simple' or 'deep'
 
 LEARNING_RATE = 1e-4         # Learning rate for both models
 NUM_EPOCHS = 100             # Maximum epochs (early stopping usually triggers first)
-EARLY_STOPPING_PATIENCE = 500 # Stop if no improvement for this many epochs
+EARLY_STOPPING_PATIENCE = 50  # Stop if no improvement for this many epochs
 WEIGHT_DECAY = 1e-3          # L2 regularization strength
 MIN_SIGMA = 1e-3             # Minimum sigma for numerical stability
 RANDOM_SEED = 42             # Random seed for reproducibility

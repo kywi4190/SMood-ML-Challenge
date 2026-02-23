@@ -9,7 +9,9 @@
   "val_events": 172,
   "embedding_dim": 768,
   "backbones": [
-    "bioclip2"
+    "bioclip2",
+    "bioclip2_colornorm"
   ],
-  "embedding_dim_bioclip2": 768
+  "embedding_dim_bioclip2": 768,
+  "embedding_dim_bioclip2_colornorm": 768
 }

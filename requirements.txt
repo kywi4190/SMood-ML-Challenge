@@ -30,3 +30,9 @@ matplotlib>=3.7.0
 
 # Utility for image handling
 Pillow>=9.4.0
+
+# OpenCV for color calibration (cv2.mcc module for ColorChecker detection)
+opencv-contrib-python>=4.8.0
+
+# Hyperparameter optimization
+optuna>=3.0.0
